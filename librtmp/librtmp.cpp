@@ -391,8 +391,8 @@ void ChunkStream::Write(char* buf, int len)
 				ret = avcodec_receive_frame(c, frame);
 				if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {					
 					memcpy(NDI_video_frame.p_data,frame->data[0], NDI_video_frame.xres* NDI_video_frame.yres);
-					memcpy(NDI_video_frame.p_data+ 2073600, frame->data[2], NDI_video_frame.xres* NDI_video_frame.yres/4);
-					memcpy(NDI_video_frame.p_data + 2073600+ 518400, frame->data[1], NDI_video_frame.xres* NDI_video_frame.yres/4);
+					memcpy(NDI_video_frame.p_data+ NDI_video_frame.xres * NDI_video_frame.yres, frame->data[2], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
+					memcpy(NDI_video_frame.p_data + (int)((NDI_video_frame.xres * NDI_video_frame.yres)+ (NDI_video_frame.xres * NDI_video_frame.yres / 4.0f)), frame->data[1], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
 					NDIlib_send_send_video_v2(pNDI_send, &NDI_video_frame);
 
 				}
