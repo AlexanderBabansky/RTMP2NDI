@@ -9,6 +9,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
 }
 
 #include <stdio.h>
@@ -156,8 +158,12 @@ private:
 	AVCodecContext* c;
 	AVFormatContext* fmt_ctx = NULL;
 	AVIOContext* avio_ctx;
+	struct SwsContext* sws_ctx;
+	uint8_t *dst_data[4];
+	int dst_linesize[4];
 	uint8_t* avio_ctx_buffer = NULL;
 	size_t avio_ctx_buffer_size = 4096;
+	bool image_loaded = false;
 
 	NDIlib_send_instance_t pNDI_send = NULL;
 	NDIlib_video_frame_v2_t NDI_video_frame;

@@ -182,13 +182,17 @@ ChunkStream::ChunkStream(int buflen, uint8_t chunk_stream, SessionData* session_
 	c->chroma_sample_location = AVCHROMA_LOC_LEFT;
 	c->field_order = AV_FIELD_PROGRESSIVE;
 	c->profile = 100;
-	c->level = 40;
+	c->level = 40;	
 }
 
 ChunkStream::~ChunkStream()
 {
 	delete[] data_buf;
 
+	if (image_loaded) {
+		av_freep(&dst_data[0]);
+		sws_freeContext(sws_ctx);
+	}
 	if (NDI_video_frame.p_data)
 		free(NDI_video_frame.p_data);
 	if (pNDI_send)
@@ -371,30 +375,42 @@ void ChunkStream::Write(char* buf, int len)
 			if (video_header->avcPacketType == 0) {
 				c->extradata = reinterpret_cast<uint8_t*>(av_malloc(AV_INPUT_BUFFER_PADDING_SIZE + message_length));
 				c->extradata_size = message_length-5;
-				memcpy(c->extradata, data_buf + 5, message_length - 5);
+				memcpy(c->extradata, data_buf + 5, message_length - 5);	
 				c->width = session_data->width;
 				c->height = session_data->height;
 				auto ret = avcodec_open2(c, codec, NULL);
-
-				//init sender
-				pNDI_send = NDIlib_send_create(nullptr);				
-				NDI_video_frame.xres = c->width;
-				NDI_video_frame.yres = c->height;
-				NDI_video_frame.FourCC = NDIlib_FourCC_type_YV12;
-				NDI_video_frame.p_data = (uint8_t*)malloc(NDI_video_frame.xres * NDI_video_frame.yres * 1.5f);
 			}
 			else {
-				//session_data->videoBuffer->Write(data_buf+5, message_length-5);				
+				//session_data->videoBuffer->Write(data_buf+5, message_length-5);								
 				auto ret = av_parser_parse2(parser, c, &pkt->data, &pkt->size,
-					reinterpret_cast<uint8_t*>(data_buf+5), message_length-5, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+					reinterpret_cast<uint8_t*>(data_buf + 5), message_length - 5, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
 				ret = avcodec_send_packet(c, pkt);
 				ret = avcodec_receive_frame(c, frame);
-				if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {					
-					memcpy(NDI_video_frame.p_data,frame->data[0], NDI_video_frame.xres* NDI_video_frame.yres);
-					memcpy(NDI_video_frame.p_data+ NDI_video_frame.xres * NDI_video_frame.yres, frame->data[2], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
-					memcpy(NDI_video_frame.p_data + (int)((NDI_video_frame.xres * NDI_video_frame.yres)+ (NDI_video_frame.xres * NDI_video_frame.yres / 4.0f)), frame->data[1], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
-					NDIlib_send_send_video_v2(pNDI_send, &NDI_video_frame);
+				if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+					if (!image_loaded) {					
+						//init sender
+						pNDI_send = NDIlib_send_create(nullptr);
+						NDI_video_frame.xres = c->width;
+						NDI_video_frame.yres = c->height;
+						NDI_video_frame.FourCC = NDIlib_FourCC_type_YV12;
+						NDI_video_frame.p_data = (uint8_t*)malloc(NDI_video_frame.xres * NDI_video_frame.yres * 1.5f);
 
+						AVPixelFormat pix_fmt = (AVPixelFormat)(frame->format);
+						sws_ctx = sws_getContext(c->width, c->height, (AVPixelFormat)(frame->format),
+							c->width, c->height, AV_PIX_FMT_YUV420P,
+							SWS_BILINEAR, NULL, NULL, NULL);
+						ret = av_image_alloc(dst_data, dst_linesize,
+							frame->width, frame->height, AV_PIX_FMT_YUV420P, 1);
+						image_loaded = true;
+					}
+
+					sws_scale(sws_ctx, (const uint8_t* const*)frame->data,
+						frame->linesize, 0, c->height, dst_data, dst_linesize);
+
+					memcpy(NDI_video_frame.p_data,dst_data[0], NDI_video_frame.xres* NDI_video_frame.yres);
+					memcpy(NDI_video_frame.p_data+ NDI_video_frame.xres * NDI_video_frame.yres, dst_data[2], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
+					memcpy(NDI_video_frame.p_data + (int)((NDI_video_frame.xres * NDI_video_frame.yres)+ (NDI_video_frame.xres * NDI_video_frame.yres / 4.0f)), dst_data[1], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
+					NDIlib_send_send_video_v2(pNDI_send, &NDI_video_frame);
 				}
 			}
 		}

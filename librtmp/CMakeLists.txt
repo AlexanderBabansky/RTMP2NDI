@@ -25,6 +25,7 @@ target_link_libraries(librtmp
 	${FFMPEG_PATH}/bin/avcodec.lib
 	${FFMPEG_PATH}/bin/avformat.lib
 	${FFMPEG_PATH}/bin/avutil.lib
+	${FFMPEG_PATH}/bin/swscale.lib
 	${FFMPEG_PATH}/bin/x264.lib
 	${NDI_SDK}/Lib/x64/Processing.NDI.Lib.x64.lib
 	Ws2_32.lib)
