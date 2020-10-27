@@ -3,7 +3,7 @@ This is RTMP server, that can transform stream to NDI, so you can input any RTMP
 ## Limitations
 At this moment, only video with H264, YUV 4:2:0 supported.
 ## Installation
-There is only Windows build available. You can download it in releases.
+There is only Windows build available. You can download it in [releases](https://github.com/AlexanderBabansky/RTMP2NDI/releases).
 ## Usage example
 Click *Start*, firewall warning can appear, allow. Setup your RTMP Streamer to server. As soon as you start RTMP streaming, NDI stream appears.
 ## Build from source
