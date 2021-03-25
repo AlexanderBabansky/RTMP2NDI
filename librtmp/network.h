@@ -14,7 +14,7 @@ private:
 	SOCKET clientSocket;
 public:
 	ClientSocket(SOCKET s);
-	bool Receive(void* buf,uint32_t buf_len);
+	bool Receive(void* buf, uint32_t buf_len);
 	void Send(void* buf, uint32_t buf_len);
 	bool IsValid();
 	void Close();
