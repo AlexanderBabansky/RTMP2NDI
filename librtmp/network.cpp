@@ -1,16 +1,19 @@
 #include "network.h"
+#include <stdexcept>
+
+using namespace std;
 
 NetworkManager::NetworkManager()
 {
 	int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
 	if (iResult != 0) {
 		printf("WSAStartup failed with error: %d\n", iResult);
-		throw 0;
+		throw runtime_error("WSAStartup failed with error");
 	}
 }
 
 ServerSocket NetworkManager::StartServer(uint16_t port_i)
-{	
+{
 	char port[6];
 	itoa(port_i, port, 10);
 	struct addrinfo hints;
@@ -24,14 +27,14 @@ ServerSocket NetworkManager::StartServer(uint16_t port_i)
 	if (iResult != 0) {
 		printf("getaddrinfo failed with error: %d\n", iResult);
 		WSACleanup();
-		throw 0;
+		throw runtime_error("getaddrinfo failed with error");
 	}
 	SOCKET ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
 	if (ListenSocket == INVALID_SOCKET) {
 		printf("socket failed with error: %ld\n", WSAGetLastError());
 		freeaddrinfo(result);
 		WSACleanup();
-		throw 0;
+		throw runtime_error("socket failed with error");
 	}
 	iResult = bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen);
 	if (iResult == SOCKET_ERROR) {
@@ -39,7 +42,7 @@ ServerSocket NetworkManager::StartServer(uint16_t port_i)
 		freeaddrinfo(result);
 		closesocket(ListenSocket);
 		WSACleanup();
-		throw 0;
+		throw runtime_error("bind failed with error");
 	}
 	freeaddrinfo(result);
 	iResult = listen(ListenSocket, SOMAXCONN);
@@ -47,7 +50,7 @@ ServerSocket NetworkManager::StartServer(uint16_t port_i)
 		printf("listen failed with error: %d\n", WSAGetLastError());
 		closesocket(ListenSocket);
 		WSACleanup();
-		throw 0;
+		throw runtime_error("listen failed with error");
 	}
 	return ServerSocket(ListenSocket);
 }
@@ -57,7 +60,7 @@ NetworkManager::~NetworkManager()
 	WSACleanup();
 }
 
-ServerSocket::ServerSocket(SOCKET ListenSocket):
+ServerSocket::ServerSocket(SOCKET ListenSocket) :
 	ListenSocket(ListenSocket)
 {
 }
@@ -78,7 +81,7 @@ ServerSocket::~ServerSocket()
 	closesocket(ListenSocket);
 }
 
-ClientSocket::ClientSocket(SOCKET s):
+ClientSocket::ClientSocket(SOCKET s) :
 	clientSocket(s)
 {
 }

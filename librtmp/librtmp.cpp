@@ -1,4 +1,5 @@
 #include "librtmp.h"
+#include "librtmp.h"
 #include "network.h"
 
 #define PCM_SET_CHUNK_SIZE 1
@@ -21,31 +22,35 @@ int read_packet(void* opaque, uint8_t* buf, int buf_size) {
 	return buf_size;
 }
 
-LibRTMP::LibRTMP(uint16_t port):
+LibRTMP::LibRTMP(uint16_t port) :
 	ser_thread(&LibRTMP::ServerThread, this),
 	serverSocket(networkManager.StartServer(port))
 {
 	NDIlib_initialize();
-	printf("Starting server");	
-	runing = true;
-	ser_thread.detach();	
+	printf("Starting server...\n");
+	running = true;
 }
 
 LibRTMP::~LibRTMP()
 {
-	runing = false;
+	running = false;
 	serverSocket.Close();
-	while (!stoped) {}
+	ser_thread.join();
 	NDIlib_destroy();
+}
+
+LIBRTMP_API bool LibRTMP::IsRunning()
+{
+	return running;
 }
 
 void LibRTMP::ServerThread()
 {
-	while (!runing) {}	
-	printf("Listening...");	
-	while (runing) {
+	while (!running) {}
+	printf("Listening...\n");
+	while (running) {
 		auto clientSocket = serverSocket.Accept();
-		printf("Incoming connection");
+		printf("Incoming connection\n");
 		if (!clientSocket.IsValid()) {
 			printf("accept failed with error: %d\n", WSAGetLastError());
 			break;
@@ -53,7 +58,6 @@ void LibRTMP::ServerThread()
 		std::thread cli_thread(&LibRTMP::ClientThread, this, clientSocket);
 		cli_thread.detach();
 	}
-	stoped = true;
 }
 
 void LibRTMP::ClientThread(ClientSocket clientSocket)
@@ -63,8 +67,8 @@ void LibRTMP::ClientThread(ClientSocket clientSocket)
 	//wait for C0
 	RTMP::Handshake::C0* c0 = new RTMP::Handshake::C0{ 0 };
 	RTMP::Handshake::C1* s1 = new RTMP::Handshake::C1{ 0 };
-	clientSocket.Receive(c0,sizeof(*c0));
-	printf("RTMP version %d", c0->version);
+	clientSocket.Receive(c0, sizeof(*c0));
+	printf("RTMP version %d\n", c0->version);
 	clientSocket.Send(c0, sizeof(*c0));
 	s1->random[0] = 1;
 	s1->random[1] = 2;
@@ -97,14 +101,14 @@ void LibRTMP::ClientThread(ClientSocket clientSocket)
 	while (true) {
 		message_length = 0;
 		timestamp = 0;
-		if (!clientSocket.Receive(header,sizeof(*header))) {
+		if (!clientSocket.Receive(header, sizeof(*header))) {
 			break;
 		}
 		if (header->id < 2) { throw 0; }
 
 		if (header->fmt == 0 && header->id > 1) {
 			RTMP::Chunk::MessageHeaderT0* mes_header = new RTMP::Chunk::MessageHeaderT0{ 0 };
-			clientSocket.Receive(mes_header,sizeof(*mes_header));
+			clientSocket.Receive(mes_header, sizeof(*mes_header));
 			try {
 				chunk_streams.at(header->id);
 			}
@@ -116,7 +120,7 @@ void LibRTMP::ClientThread(ClientSocket clientSocket)
 			chunk_streams[header->id]->SetMessageLength(message_length);
 			chunk_streams[header->id]->SetMessageStream(mes_header->message_stream);
 			chunk_streams[header->id]->SetMessageType(mes_header->message_type);
-			memcpy(reinterpret_cast<char*>(&timestamp)+1, mes_header->timestamp, 3);
+			memcpy(reinterpret_cast<char*>(&timestamp) + 1, mes_header->timestamp, 3);
 			timestamp = ntohl(timestamp);
 			chunk_streams[header->id]->SetMessageTimestamp(timestamp);
 			delete mes_header;
@@ -162,7 +166,7 @@ ChunkStream::ChunkStream(int buflen, uint8_t chunk_stream, SessionData* session_
 	codec(avcodec_find_decoder(AV_CODEC_ID_H264))
 {
 	NDI_video_frame.p_data = 0;
-	data_buf = new char[buflen];	
+	data_buf = new char[buflen];
 	pkt = av_packet_alloc();
 	frame = av_frame_alloc();
 	parser = av_parser_init(codec->id);//5
@@ -181,14 +185,13 @@ ChunkStream::ChunkStream(int buflen, uint8_t chunk_stream, SessionData* session_
 	c->color_range = AVCOL_RANGE_MPEG;
 	c->chroma_sample_location = AVCHROMA_LOC_LEFT;
 	c->field_order = AV_FIELD_PROGRESSIVE;
-	c->profile = 100;
-	c->level = 40;	
+	c->profile = FF_PROFILE_H264_HIGH;
+	c->level = FF_LEVEL_UNKNOWN;
 }
 
 ChunkStream::~ChunkStream()
 {
 	delete[] data_buf;
-
 	if (image_loaded) {
 		av_freep(&dst_data[0]);
 		sws_freeContext(sws_ctx);
@@ -229,6 +232,7 @@ uint32_t ChunkStream::GetReadLast()
 {
 	return message_length - write_pos;
 }
+int64_t minMessageLen = INT64_MAX;
 
 void ChunkStream::Write(char* buf, int len)
 {
@@ -244,13 +248,13 @@ void ChunkStream::Write(char* buf, int len)
 			}
 		}
 		if (message_type == RTMP_MSG_COMMAND) {//AMF0 command
-			RTMP::Message::RtmpCommand amfCmd(data_buf,message_length);
+			RTMP::Message::RtmpCommand amfCmd(data_buf, message_length);
 			if (amfCmd.command_name == "connect") {
 				char* resp_buf = new char[5];
 				uint32_t* window_size = reinterpret_cast<uint32_t*>(resp_buf);
 				*window_size = 5000000;
 				*window_size = htonl(*window_size);
-				RTMP::Message::RtmpMessage* response = new RTMP::Message::RtmpMessage(PCM_WINDOW_ACKNOWLEDGEMENT_SIZE, 4,0,0,resp_buf);
+				RTMP::Message::RtmpMessage* response = new RTMP::Message::RtmpMessage(PCM_WINDOW_ACKNOWLEDGEMENT_SIZE, 4, 0, 0, resp_buf);
 				session_data->chunk_output->SendRTMPMessage(response);
 
 				resp_buf = new char[5];
@@ -282,7 +286,7 @@ void ChunkStream::Write(char* buf, int len)
 
 				pair.key = "level";
 				pair.value = AMFValue(AMFType::STRING);
-				pair.value.data_string="status";
+				pair.value.data_string = "status";
 				resp_result.parameters_extra.push_back(pair);
 
 				pair.key = "code";
@@ -338,10 +342,10 @@ void ChunkStream::Write(char* buf, int len)
 
 				int buflen = 0;
 				char* resp_buf = resp_result.Serialize(&buflen);
-				RTMP::Message::RtmpMessage *response = new RTMP::Message::RtmpMessage(RTMP_MSG_COMMAND, buflen, 0, message_stream, resp_buf);
+				RTMP::Message::RtmpMessage* response = new RTMP::Message::RtmpMessage(RTMP_MSG_COMMAND, buflen, 0, message_stream, resp_buf);
 				session_data->chunk_output3->SendRTMPMessage(response);
 			}
-			
+
 		}
 		if (message_type == RTMP_MSG_METADATA) {
 			RTMP::Message::RtmpMetadata amdMeta(data_buf, message_length);
@@ -352,21 +356,21 @@ void ChunkStream::Write(char* buf, int len)
 						containsMeta = true;
 					}
 				}
-				if (i.GetType() == AMFType::ECMA_ARRAY&&containsMeta) {
+				if (i.GetType() == AMFType::ECMA_ARRAY && containsMeta) {
 					for (auto& i2 : i.data_array) {
 						if (i2.key == "width") {
-							session_data->width = i2.value.data_number;							
+							session_data->width = i2.value.data_number;
 						}
 						else if (i2.key == "height") {
 							session_data->height = i2.value.data_number;
 						}
 					}
 				}
-			}			
+			}
 		}
-		if (message_type == RTMP_MSG_VIDEO) {		
+		if (message_type == RTMP_MSG_VIDEO) {
 #pragma pack(push,1)
-			struct VH{
+			struct VH {
 				uint8_t codecId : 4;
 				uint8_t frameType : 4;
 				uint8_t avcPacketType;
@@ -374,43 +378,51 @@ void ChunkStream::Write(char* buf, int len)
 #pragma pack(pop)
 			if (video_header->avcPacketType == 0) {
 				c->extradata = reinterpret_cast<uint8_t*>(av_malloc(AV_INPUT_BUFFER_PADDING_SIZE + message_length));
-				c->extradata_size = message_length-5;
-				memcpy(c->extradata, data_buf + 5, message_length - 5);	
+				c->extradata_size = message_length - 5;
+				memcpy(c->extradata, data_buf + 5, message_length - 5);
 				c->width = session_data->width;
 				c->height = session_data->height;
 				auto ret = avcodec_open2(c, codec, NULL);
 			}
 			else {
-				//session_data->videoBuffer->Write(data_buf+5, message_length-5);								
-				auto ret = av_parser_parse2(parser, c, &pkt->data, &pkt->size,
-					reinterpret_cast<uint8_t*>(data_buf + 5), message_length - 5, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-				ret = avcodec_send_packet(c, pkt);
-				ret = avcodec_receive_frame(c, frame);
-				if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
-					if (!image_loaded) {					
-						//init sender
-						pNDI_send = NDIlib_send_create(nullptr);
-						NDI_video_frame.xres = c->width;
-						NDI_video_frame.yres = c->height;
-						NDI_video_frame.FourCC = NDIlib_FourCC_type_YV12;
-						NDI_video_frame.p_data = (uint8_t*)malloc(NDI_video_frame.xres * NDI_video_frame.yres * 1.5f);
+				if (message_length > 50) {
+					/*auto ret = av_parser_parse2(parser, c, &pkt->data, &pkt->size,
+						reinterpret_cast<uint8_t*>(data_buf + 5), message_length - 5, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);*/
+					pkt->data = reinterpret_cast<uint8_t*>(data_buf + 5);
+					pkt->size = message_length - 5;
+					int ret = avcodec_send_packet(c, pkt);
+					if (ret >= 0) {
+						ret = avcodec_receive_frame(c, frame);
+						if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+							if (!image_loaded) {
+								//init sender
+								pNDI_send = NDIlib_send_create(nullptr);
+								NDI_video_frame.xres = c->width;
+								NDI_video_frame.yres = c->height;
+								NDI_video_frame.FourCC = NDIlib_FourCC_type_YV12;
+								NDI_video_frame.p_data = (uint8_t*)malloc(NDI_video_frame.xres * NDI_video_frame.yres * 1.5f);
 
-						AVPixelFormat pix_fmt = (AVPixelFormat)(frame->format);
-						sws_ctx = sws_getContext(c->width, c->height, (AVPixelFormat)(frame->format),
-							c->width, c->height, AV_PIX_FMT_YUV420P,
-							SWS_BILINEAR, NULL, NULL, NULL);
-						ret = av_image_alloc(dst_data, dst_linesize,
-							frame->width, frame->height, AV_PIX_FMT_YUV420P, 1);
-						image_loaded = true;
+								AVPixelFormat pix_fmt = (AVPixelFormat)(frame->format);
+								sws_ctx = sws_getContext(c->width, c->height, (AVPixelFormat)(frame->format),
+									c->width, c->height, AV_PIX_FMT_YUV420P,
+									SWS_BILINEAR, NULL, NULL, NULL);
+								ret = av_image_alloc(dst_data, dst_linesize,
+									frame->width, frame->height, AV_PIX_FMT_YUV420P, 1);
+								image_loaded = true;
+							}
+
+							sws_scale(sws_ctx, (const uint8_t* const*)frame->data,
+								frame->linesize, 0, c->height, dst_data, dst_linesize);
+
+							memcpy(NDI_video_frame.p_data, dst_data[0], NDI_video_frame.xres * NDI_video_frame.yres);
+							memcpy(NDI_video_frame.p_data + NDI_video_frame.xres * NDI_video_frame.yres, dst_data[2], NDI_video_frame.xres * NDI_video_frame.yres / 4.0f);
+							memcpy(NDI_video_frame.p_data + (int)((NDI_video_frame.xres * NDI_video_frame.yres) + (NDI_video_frame.xres * NDI_video_frame.yres / 4.0f)), dst_data[1], NDI_video_frame.xres * NDI_video_frame.yres / 4.0f);
+							NDIlib_send_send_video_v2(pNDI_send, &NDI_video_frame);
+						}
 					}
-
-					sws_scale(sws_ctx, (const uint8_t* const*)frame->data,
-						frame->linesize, 0, c->height, dst_data, dst_linesize);
-
-					memcpy(NDI_video_frame.p_data,dst_data[0], NDI_video_frame.xres* NDI_video_frame.yres);
-					memcpy(NDI_video_frame.p_data+ NDI_video_frame.xres * NDI_video_frame.yres, dst_data[2], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
-					memcpy(NDI_video_frame.p_data + (int)((NDI_video_frame.xres * NDI_video_frame.yres)+ (NDI_video_frame.xres * NDI_video_frame.yres / 4.0f)), dst_data[1], NDI_video_frame.xres* NDI_video_frame.yres/4.0f);
-					NDIlib_send_send_video_v2(pNDI_send, &NDI_video_frame);
+					else {
+						printf("Error decoding\n");
+					}
 				}
 			}
 		}
@@ -454,14 +466,14 @@ AMFValue::AMFValue(char* data)
 	switch (type)
 	{
 	case AMFType::STRING:
-		str_len = reinterpret_cast<uint16_t*>(data+1);
-		*str_len = ntohs(*str_len);		
+		str_len = reinterpret_cast<uint16_t*>(data + 1);
+		*str_len = ntohs(*str_len);
 		memset(str_char, 0, 50);
 		memcpy(str_char, data + 3, *str_len);
 		data_string = str_char;
 		break;
 	case AMFType::NUMBER:
-		memcpy(&data_number, data + 1, 8);		
+		memcpy(&data_number, data + 1, 8);
 		to_swap = reinterpret_cast<unsigned __int64*>(&data_number);
 		*to_swap = _WS2_32_WINSOCK_SWAP_LONGLONG(*to_swap);
 		break;
@@ -499,7 +511,7 @@ AMFValue::AMFValue(char* data)
 		break;
 	}
 }
-AMFValue::AMFValue(AMFType t, char* data):
+AMFValue::AMFValue(AMFType t, char* data) :
 	type(t)
 {
 	uint16_t* str_len;
@@ -526,7 +538,7 @@ AMFValue::AMFValue(AMFType t, char* data):
 		break;
 	}
 }
-AMFValue::AMFValue(AMFType t):
+AMFValue::AMFValue(AMFType t) :
 	type(t)
 {
 }
@@ -545,7 +557,7 @@ int AMFValue::GetLength()
 		return 2;
 		break;
 	case AMFType::ECMA_ARRAY:
-		res=8;
+		res = 8;
 		for (auto& i : data_array) {
 			res += i.value.GetLength() + i.key.length() + 2;
 		}
@@ -575,14 +587,14 @@ char* AMFValue::Serialize()
 	{
 	case AMFType::STRING:
 		buf[0] = 2;
-		str_len_amf = reinterpret_cast<uint16_t*>(buf+1);
+		str_len_amf = reinterpret_cast<uint16_t*>(buf + 1);
 		*str_len_amf = data_string.length();
 		*str_len_amf = htons(*str_len_amf);
-		memcpy(buf+3,data_string.c_str(),data_string.length());
+		memcpy(buf + 3, data_string.c_str(), data_string.length());
 		break;
 	case AMFType::NUMBER:
 		buf[0] = 0;
-		amf_double = reinterpret_cast<double*>(buf+1);
+		amf_double = reinterpret_cast<double*>(buf + 1);
 		*amf_double = data_number;
 		to_swap = reinterpret_cast<uint64_t*>(amf_double);
 		*to_swap = _WS2_32_WINSOCK_SWAP_LONGLONG(*to_swap);
@@ -615,7 +627,7 @@ RTMP::Message::RtmpCommand::RtmpCommand(char* data, int message_length)
 		AMFValue trans_id_amf(data + read_pos);
 		transaction_id = trans_id_amf.data_number;
 		read_pos += trans_id_amf.GetLength();
-	}	
+	}
 	if (data[read_pos] != 5) {
 		read_pos++;
 		while (true) {
@@ -645,7 +657,7 @@ RTMP::Message::RtmpCommand::RtmpCommand()
 }
 
 char* RTMP::Message::RtmpCommand::Serialize(int* buflen_ret)
-{	
+{
 	int buflen = 3 + command_name.length() + 9 + 1;
 	if (parameters.size() != 0) {
 		buflen += 3;
@@ -667,11 +679,11 @@ char* RTMP::Message::RtmpCommand::Serialize(int* buflen_ret)
 
 	int write_pos = 1;
 	buf[0] = 2;
-	uint16_t* com_n_len = reinterpret_cast<uint16_t*>(buf+write_pos);
+	uint16_t* com_n_len = reinterpret_cast<uint16_t*>(buf + write_pos);
 	*com_n_len = command_name.length();
 	*com_n_len = htons(*com_n_len);
 	write_pos += 2;
-	memcpy(buf+write_pos,command_name.c_str(),command_name.length());
+	memcpy(buf + write_pos, command_name.c_str(), command_name.length());
 	write_pos += command_name.length();
 
 	buf[write_pos] = 0;
@@ -743,7 +755,7 @@ char* RTMP::Message::RtmpCommand::Serialize(int* buflen_ret)
 	return buf;
 }
 
-RTMP::Message::RtmpMessage::RtmpMessage(uint8_t type, uint32_t payload_length, uint32_t timestamp, uint32_t stream, char* data):
+RTMP::Message::RtmpMessage::RtmpMessage(uint8_t type, uint32_t payload_length, uint32_t timestamp, uint32_t stream, char* data) :
 	type(type),
 	payload_length(payload_length),
 	timestamp(timestamp),
@@ -757,7 +769,7 @@ RTMP::Message::RtmpMessage::~RtmpMessage()
 	delete[] data;
 }
 
-ChunkStreamOutput::ChunkStreamOutput(uint8_t chunk_stream, SessionData* session_data, ClientSocket* clientSocket):
+ChunkStreamOutput::ChunkStreamOutput(uint8_t chunk_stream, SessionData* session_data, ClientSocket* clientSocket) :
 	chunk_stream(chunk_stream),
 	session_data(session_data),
 	clientSocket(clientSocket)
@@ -779,19 +791,19 @@ void ChunkStreamOutput::SendRTMPMessage(RTMP::Message::RtmpMessage* msg)
 
 	char* chunk_buf = new char[sizeof(header) + sizeof(mes_header) + msg->payload_length];
 	memcpy(chunk_buf, &header, sizeof(header));
-	memcpy(chunk_buf+ sizeof(header), &mes_header, sizeof(mes_header));
-	memcpy(chunk_buf+ sizeof(header)+sizeof(mes_header), msg->data, msg->payload_length);
+	memcpy(chunk_buf + sizeof(header), &mes_header, sizeof(mes_header));
+	memcpy(chunk_buf + sizeof(header) + sizeof(mes_header), msg->data, msg->payload_length);
 
 	clientSocket->Send(chunk_buf, (sizeof(header) + sizeof(mes_header) + msg->payload_length));
 	delete[] chunk_buf;
- 	delete msg;
+	delete msg;
 }
 
 RTMP::Message::RtmpMetadata::RtmpMetadata(char* data, int message_length)
 {
-	int read_pos = 0;	
+	int read_pos = 0;
 	while (read_pos != message_length) {
-		AMFValue meta_data(data+read_pos);
+		AMFValue meta_data(data + read_pos);
 		parameters.push_back(meta_data);
 		read_pos += meta_data.GetLength();
 	}

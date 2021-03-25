@@ -14,8 +14,7 @@ include_directories(
 	${FFMPEG_PATH}/include
 	${NDI_SDK}/Include)
 
-# add the executable
-add_library(librtmp SHARED
+add_library(librtmp STATIC
 	librtmp.cpp
 	ringbuf.cpp
 	network.cpp

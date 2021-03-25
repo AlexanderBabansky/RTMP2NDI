@@ -28,12 +28,12 @@ extern "C" {
 struct SessionData;
 
 enum class AMFType {
-	STRING=2,
-	NUMBER=0,
-	BOOLEAN=1,
-	NUL=5,
-	ECMA_ARRAY=8,
-	STRICT_ARRAY=10
+	STRING = 2,
+	NUMBER = 0,
+	BOOLEAN = 1,
+	NUL = 5,
+	ECMA_ARRAY = 8,
+	STRICT_ARRAY = 10
 };
 class AMFValue;
 class AMFKeyValue;
@@ -65,7 +65,7 @@ namespace RTMP {
 	namespace Message {
 		class RtmpCommand {//non serializable
 		private:
-			
+
 		public:
 			std::string command_name;
 			double transaction_id = 0;
@@ -83,7 +83,7 @@ namespace RTMP {
 		};
 		class RtmpMessage {
 		private:
-			
+
 		public:
 			uint8_t type;
 			uint32_t payload_length;
@@ -91,7 +91,7 @@ namespace RTMP {
 			uint32_t stream;
 			char* data;
 
-			RtmpMessage(uint8_t type, uint32_t payload_length, uint32_t timestamp, uint32_t stream,char* data);
+			RtmpMessage(uint8_t type, uint32_t payload_length, uint32_t timestamp, uint32_t stream, char* data);
 			~RtmpMessage();
 			char* Serialize();
 		};
@@ -132,8 +132,8 @@ namespace RTMP {
 			uint32_t timestamp;
 		};
 	}
-	namespace Message{
-		struct UserControlMessage{
+	namespace Message {
+		struct UserControlMessage {
 			uint16_t type;
 			uint32_t data;
 		};
@@ -143,14 +143,14 @@ namespace RTMP {
 
 class ChunkStream {
 private:
-	
+
 	uint8_t chunk_stream = 0;
 	uint32_t write_pos = 0, message_length = 0;
 	uint32_t message_stream = 0;
 	uint8_t message_type = 0;
 	uint32_t timestamp = 0;
 	SessionData* session_data;
-	
+
 	AVPacket* pkt;
 	AVFrame* frame;
 	const AVCodec* codec;
@@ -159,7 +159,7 @@ private:
 	AVFormatContext* fmt_ctx = NULL;
 	AVIOContext* avio_ctx;
 	struct SwsContext* sws_ctx;
-	uint8_t *dst_data[4];
+	uint8_t* dst_data[4];
 	int dst_linesize[4];
 	uint8_t* avio_ctx_buffer = NULL;
 	size_t avio_ctx_buffer_size = 4096;
@@ -171,7 +171,7 @@ public:
 	char* data_buf;
 	int buflen;
 
-	ChunkStream(int buflen=0, uint8_t chunk_stream=0, SessionData* session_data=0);
+	ChunkStream(int buflen = 0, uint8_t chunk_stream = 0, SessionData* session_data = 0);
 	~ChunkStream();
 	void SetMessageLength(uint32_t mes_len);
 	void SetMessageStream(uint32_t str);
@@ -180,7 +180,7 @@ public:
 	void AddMessageTimestamp(uint32_t time);
 	uint32_t GetReadLast();
 	void Write(char* buf, int len);
-	
+
 };
 
 class ChunkStreamOutput {
@@ -198,20 +198,21 @@ struct SessionData {
 	uint32_t chunk_size;
 	char* data_buf;
 	RingBuf* videoBuffer;
-	uint16_t width=0, height = 0;
-	ChunkStreamOutput* chunk_output, *chunk_output3;
+	uint16_t width = 0, height = 0;
+	ChunkStreamOutput* chunk_output, * chunk_output3;
 };
 
 
 class LibRTMP {
 private:
 	std::thread ser_thread;
-	bool runing = false, stoped = false;
+	bool running = false;
 	NetworkManager networkManager;
 	ServerSocket serverSocket;
 public:
 	LIBRTMP_API LibRTMP(uint16_t port);
 	LIBRTMP_API ~LibRTMP();
+	LIBRTMP_API bool IsRunning();
 
 	void ServerThread();
 	void ClientThread(ClientSocket clientSocket);
