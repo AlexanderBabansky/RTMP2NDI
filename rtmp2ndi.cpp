@@ -6,6 +6,7 @@
 #include <fstream>
 #include <mutex>
 #include <chrono>
+#include <thread>
 #include "cxxopts.hpp"
 #include "Processing.NDI.Lib.h"
 #include "easyrtmp/data_layers/tcp_network.h"
@@ -488,9 +489,10 @@ void ClientVoid2(DataLayer* transport_level) {
             goto terminate_session;
         }
         if (!key_checked && allowed_keys.size()) {
-            if (allowed_keys.find(params->key) == allowed_keys.end())
+            if (allowed_keys.find(params->key) == allowed_keys.end()) {
                 cout << "Forbidden key" << endl;
-            break;
+                goto terminate_session;
+            }
         }
         key_checked = true;
         auto ds = CreateDecoderForKey(params->key);
