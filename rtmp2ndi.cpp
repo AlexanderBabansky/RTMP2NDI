@@ -1,5 +1,4 @@
 #include <iostream>
-#include <map>
 #include <list>
 #include <unordered_set>
 #include <cassert>
@@ -322,15 +321,47 @@ struct DecoderStruct {
         avcodec_free_context(&audio_ctx);
     }
 
-    bool InitAudio(const librtmp::ClientParameters* params, DATA_BYTES extra_data) {
+    bool InitAudio(librtmp::ClientParameters* params, rtmp_proto::AudioPacketAAC audio_pkt) {
+        assert(audio_pkt.aac_packet_type == 0);
         lock_guard<recursive_mutex> g(decoder_mutex);
         CleanupAudio();
         const AVCodec* codec = nullptr;
+
+        if (!params->samplerate) {
+            cout << "Audio parameters do not contain samplerate. Getting from packet. Samplerate is ";
+            switch (audio_pkt.d.sample_rate)
+            {
+            case 0:
+                params->samplerate = 5500;
+                break;
+            case 1:
+                params->samplerate = 11000;
+                break;
+            case 2:
+                params->samplerate = 11000;
+                break;
+            case 3:
+                params->samplerate = 44100;
+                break;
+            }
+            cout << params->samplerate << endl;
+        }
+        if (!params->channels) {
+            cout << "Audio parameters do not contain channels. Getting from packet. Channel count is ";
+            if (audio_pkt.d.channels == 1) {
+                params->channels = 2;
+            }
+            else {
+                params->channels = 1;
+            }
+            cout << params->channels << endl;
+        }
         codec = avcodec_find_decoder(RTMPAudioCodecToFFMpeg(params->audio_codec));
         if (!codec) {
             cout << "Codec not supported" << endl;
             return false;
         }
+        auto extra_data = move(audio_pkt.audio_data_send);
         audio_ctx = avcodec_alloc_context3(codec);
         audio_ctx->sample_rate = params->samplerate;
         audio_ctx->channels = params->channels;
@@ -517,7 +548,7 @@ void ClientVoid2(DataLayer* transport_level) {
         break;
         case librtmp::RTMPMessageType::AUDIO:
             if (message.audio.aac_packet_type == 0) {
-                if (!ds->InitAudio(params, move(message.audio.audio_data_send))) {
+                if (!ds->InitAudio(params, move(message.audio))) {
                     cout << "Error initializing audio decoder" << endl;
                     goto terminate_session;
                 }
