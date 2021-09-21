@@ -15,7 +15,7 @@ When resolution is to high, artifacts appear.
 
 ## Dependencies
 * C++11 compiler (tested on MSVCv14.29, gcc 8.3.0)
-* EasyRTMP
+* [EasyRTMP](https://github.com/AlexanderBabansky/EasyRTMP)
 * [FFMpeg](https://ffmpeg.org) (avcodec,avformat,avutil,swscale,swresample)
 * [NDI SDK](https://ndi.tv/sdk) (we detected problems with version 5 on Linux builds, 4.5 works fine)
 * [OpenSSL](https://www.openssl.org) (optional, to support RTMPS)
