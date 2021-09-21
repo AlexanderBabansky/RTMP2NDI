@@ -270,7 +270,6 @@ struct DecoderStruct {
     */
     void DecodingThreadVoid() {
         while (decoding) {
-            //drops
             list<AudioVideoFrame> frames_to_send;
             {
                 lock_guard<mutex> g(buffers_mutex);
@@ -293,9 +292,6 @@ struct DecoderStruct {
                         else if (last_pts - (*i).first < delay + drop_buffer) {
                             frames_to_send.push_back(move((*i).second));
                         }
-                        else {
-                            cout << "Drop" << endl;
-                        }
                         media_buffer.erase(i);
                         i = old_i;
                     }
@@ -313,40 +309,6 @@ struct DecoderStruct {
                 }
             }else
                 this_thread::sleep_for(chrono::milliseconds(15));
-
-            /*list<AudioVideoFrame> frames_to_send;
-            {
-                lock_guard<mutex> g(buffers_mutex);
-                for (auto iter = media_buffer.begin(); iter != media_buffer.end();) {
-                    auto& i = *iter;
-                    if (decoding_offset == UINT64_MAX) {
-                        start_time = chrono::high_resolution_clock::now();
-                        decoding_offset = i.first;
-                    }
-                    auto delta = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now() - start_time).count();
-
-                    if (delta >= i.first + delay - decoding_offset) {
-                        if (delta < i.first + delay - decoding_offset + drop_buffer) {
-                            frames_to_send.push_back(move(i.second));
-                        }
-                        auto old_iter = iter;
-                        iter++;
-                        media_buffer.erase(old_iter);
-                    }
-                    else break;
-                }
-            }
-            if (frames_to_send.size() == 0) {
-                this_thread::sleep_for(chrono::milliseconds(15));
-            }
-            for (auto& i : frames_to_send) {
-                if (i.type == AVMEDIA_TYPE_VIDEO) {
-                    DecodeVideoAndSendNdi(i.is_keyframe, i.timestamp, i.composition_time, move(i.data));
-                }
-                else if (i.type == AVMEDIA_TYPE_AUDIO) {
-                    DecodeAudioAndSendNdi(i.timestamp, move(i.data));
-                }
-            }*/
         }
     }
 
@@ -654,7 +616,8 @@ void ClientVoid1(ClientStruct* cs) {
     catch (...) {
 
     }
-    cs->running_flag = false;
+    cs->tcp_network->destroy();
+    cs->running_flag = false;    
 }
 
 std::list<ClientStruct*> clients;
