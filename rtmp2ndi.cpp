@@ -108,6 +108,8 @@ struct DecoderStruct {
     bool decoding = true;
     thread decoding_thread;
     chrono::high_resolution_clock::time_point start_time;
+    uint64_t decoding_offset = UINT64_MAX;
+    bool reset_decoding_offset = true;
 
     AVCodecContext* video_ctx = nullptr, * audio_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
@@ -126,6 +128,7 @@ struct DecoderStruct {
     NDIlib_send_instance_t ndi_sender = nullptr;
 
     DecoderStruct(string key) {
+        chrono::high_resolution_clock::time_point sss;        
         assert(key.size());
         vid_pkt = av_packet_alloc();
         aud_pkt = av_packet_alloc();
@@ -171,6 +174,7 @@ struct DecoderStruct {
         {
             lock_guard<recursive_mutex> g(decoder_mutex);
             assert(video_ctx);
+            //cout << "Decoding frame pts: " << vid_pkt->pts << ", dts: "<<vid_pkt->dts << endl;
             int ret = avcodec_send_packet(video_ctx, vid_pkt);
             if (ret < 0) {
                 cout << "Error sending a video packet for decoding" << endl;
@@ -261,16 +265,68 @@ struct DecoderStruct {
         return true;
     }
 
+    /**
+    * Decodes media from queue and send NDI, maintains delay
+    */
     void DecodingThreadVoid() {
         while (decoding) {
-            auto delta = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now() - start_time).count();
+            //drops
             list<AudioVideoFrame> frames_to_send;
+            {
+                lock_guard<mutex> g(buffers_mutex);
+                if (media_buffer.size()) {
+                    auto& last_item = *(--(media_buffer.end()));
+                    auto& first_item = *(media_buffer.begin());
+
+                    if (reset_decoding_offset) {
+                        reset_decoding_offset = false;
+                        decoding_offset = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - last_item.first;
+                    }
+                    uint64_t last_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count()-decoding_offset;
+                    
+                    for (auto i = media_buffer.begin(); i != media_buffer.end();) {
+                        auto old_i = i;
+                        old_i++;
+                        if (last_pts< (*i).first || last_pts - (*i).first < delay) {
+                            break;
+                        }
+                        else if (last_pts - (*i).first < delay + drop_buffer) {
+                            frames_to_send.push_back(move((*i).second));
+                        }
+                        else {
+                            cout << "Drop" << endl;
+                        }
+                        media_buffer.erase(i);
+                        i = old_i;
+                    }
+                }                    
+            }
+
+            if (frames_to_send.size()) {
+                for (auto& i : frames_to_send) {
+                    if (i.type == AVMEDIA_TYPE_VIDEO) {
+                        DecodeVideoAndSendNdi(i.is_keyframe, i.timestamp, i.composition_time, move(i.data));
+                    }
+                    else if (i.type == AVMEDIA_TYPE_AUDIO) {
+                        DecodeAudioAndSendNdi(i.timestamp, move(i.data));
+                    }
+                }
+            }else
+                this_thread::sleep_for(chrono::milliseconds(15));
+
+            /*list<AudioVideoFrame> frames_to_send;
             {
                 lock_guard<mutex> g(buffers_mutex);
                 for (auto iter = media_buffer.begin(); iter != media_buffer.end();) {
                     auto& i = *iter;
-                    if (delta >= i.first + delay) {
-                        if (delta < i.first + delay + drop_buffer) {
+                    if (decoding_offset == UINT64_MAX) {
+                        start_time = chrono::high_resolution_clock::now();
+                        decoding_offset = i.first;
+                    }
+                    auto delta = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now() - start_time).count();
+
+                    if (delta >= i.first + delay - decoding_offset) {
+                        if (delta < i.first + delay - decoding_offset + drop_buffer) {
                             frames_to_send.push_back(move(i.second));
                         }
                         auto old_iter = iter;
@@ -290,7 +346,7 @@ struct DecoderStruct {
                 else if (i.type == AVMEDIA_TYPE_AUDIO) {
                     DecodeAudioAndSendNdi(i.timestamp, move(i.data));
                 }
-            }
+            }*/
         }
     }
 
@@ -384,8 +440,7 @@ struct DecoderStruct {
         cout << endl << "Inited audio" << endl <<
             "Key: " << params->key << endl <<
             "Samplerate: " << params->samplerate << endl <<
-            "Channels: " << params->channels << endl << endl;;
-        start_time = chrono::high_resolution_clock::now();
+            "Channels: " << params->channels << endl << endl;;        
         return true;
     }
 
@@ -457,7 +512,6 @@ struct DecoderStruct {
             "Key: " << params->key << endl <<
             "Width: " << params->width << endl <<
             "Height: " << params->height << endl << endl;;
-        start_time = chrono::high_resolution_clock::now();
         return true;
     }
 
@@ -510,7 +564,9 @@ DecoderStruct* CreateDecoderForKey(string key) {
 void ClientVoid2(DataLayer* transport_level) {
     librtmp::RTMPEndpoint rtmp_endpoint(transport_level);
     librtmp::RTMPServerSession server_session(&rtmp_endpoint);
-    bool key_checked = false;
+    bool key_checked = false;    
+    bool first_run = true;
+
     while (true) {
         auto message = server_session.GetRTMPMessage();
         auto params = server_session.GetClientParameters();
@@ -527,11 +583,16 @@ void ClientVoid2(DataLayer* transport_level) {
         }
         key_checked = true;
         auto ds = CreateDecoderForKey(params->key);
+        if (first_run) {
+            ds->decoding_offset = UINT64_MAX;
+            first_run = false;
+        }
         switch (message.message_type)
         {
         case librtmp::RTMPMessageType::VIDEO:
         {
             if (message.video.d.avc_packet_type == 0) {
+                ds->reset_decoding_offset = true;
                 if (!ds->InitVideo(params, move(message.video.video_data_send))) {
                     cout << "Error initializing video decoder" << endl;
                     goto terminate_session;
@@ -548,6 +609,7 @@ void ClientVoid2(DataLayer* transport_level) {
         break;
         case librtmp::RTMPMessageType::AUDIO:
             if (message.audio.aac_packet_type == 0) {
+                ds->reset_decoding_offset = true;
                 if (!ds->InitAudio(params, move(message.audio))) {
                     cout << "Error initializing audio decoder" << endl;
                     goto terminate_session;
@@ -633,8 +695,8 @@ int main(int argc, char** argv)
         ("k,key", "TLS private key filepath", cxxopts::value<std::string>())
         ("l,allow_keys", "RTMP allowed key list filepath. Keys are separated by newline", cxxopts::value<std::string>())
         ("w,hw_decoder", "enable hardware decoding on supported GPU")
-        ("d,delay", "in milliseconds. Keep frames synced: buffer or drop frames to keep them synced. Default is 0 ms", cxxopts::value<uint16_t>())
-        ("b,drop_buffer", "in milliseconds. Drop frames with timestamp lower then current_time-drop_buffer. Prevents NDI artifacts. Default to 200 ms", cxxopts::value<uint16_t>())
+        ("d,delay", "in milliseconds. Keeps frames synced: buffers or drops frames to keep them synced. Default is 0 ms", cxxopts::value<uint16_t>())
+        ("b,drop_buffer", "in milliseconds. Drop frames with too old timestamp in queue. Prevents NDI artifacts. Default to 200 ms", cxxopts::value<uint16_t>())
         ("h,help", "help");
     auto result = options.parse(argc, argv);
     if (result.count("help"))
