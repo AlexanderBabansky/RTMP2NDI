@@ -11,12 +11,14 @@
 #include "easyrtmp/data_layers/tcp_network.h"
 #include "easyrtmp/data_layers/openssl_tls.h"
 #include "easyrtmp/rtmp_server_session.h"
+#include "perfmon.h"
+
 extern "C" {
-    #include "libavcodec/avcodec.h"
-    #include "libswscale/swscale.h"
-    #include "libavutil/imgutils.h"
-    #include "libavutil/opt.h"
-    #include "libswresample/swresample.h"
+#include "libavcodec/avcodec.h"
+#include "libswscale/swscale.h"
+#include "libavutil/imgutils.h"
+#include "libavutil/opt.h"
+#include "libswresample/swresample.h"
 }
 
 #define MAX_AUDIO_CHANNELS 6
@@ -89,6 +91,36 @@ static enum AVPixelFormat get_hw_format(AVCodecContext* ctx,
     return AV_PIX_FMT_NONE;
 }
 
+int av_image_get_plane_size(enum AVPixelFormat pix_fmt,
+    int width, int height, int align, int plane_id)
+{
+    assert(plane_id < 4);
+    int ret, i;
+    int linesize[4];
+    ptrdiff_t aligned_linesize[4];
+    size_t sizes[4];
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pix_fmt);
+    if (!desc)
+        return AVERROR(EINVAL);
+
+    ret = av_image_check_size(width, height, 0, NULL);
+    if (ret < 0)
+        return ret;
+
+    ret = av_image_fill_linesizes(linesize, pix_fmt, width);
+    if (ret < 0)
+        return ret;
+
+    for (i = 0; i < 4; i++)
+        aligned_linesize[i] = FFALIGN(linesize[i], align);
+
+    ret = av_image_fill_plane_sizes(sizes, pix_fmt, height, aligned_linesize);
+    if (ret < 0)
+        return ret;
+
+    return sizes[plane_id];
+}
+
 int hw_decoder_ctx_init(AVCodecContext* ctx, const enum AVHWDeviceType type, AVBufferRef** hw_device_ctx)
 {
     assert(ctx && hw_device_ctx);
@@ -122,13 +154,14 @@ struct DecoderStruct {
     int dst_audio_linesize;
     AVPacket* vid_pkt = nullptr, * aud_pkt = nullptr;
     AVFrame* vid_frame = nullptr, * sw_frame = nullptr, * aud_frame = nullptr;
+    Perfmon perfmon;
 
     NDIlib_video_frame_v2_t ndi_video_frame{ 0 };
     NDIlib_audio_frame_interleaved_16s_t  ndi_audio_frame{ 0 };
     NDIlib_send_instance_t ndi_sender = nullptr;
 
     DecoderStruct(string key) {
-        chrono::high_resolution_clock::time_point sss;        
+        chrono::high_resolution_clock::time_point sss;
         assert(key.size());
         vid_pkt = av_packet_alloc();
         aud_pkt = av_packet_alloc();
@@ -142,6 +175,7 @@ struct DecoderStruct {
         }
         ndi_video_frame.FourCC = NDIlib_FourCC_type_BGRA;
         ndi_video_frame.frame_format_type = NDIlib_frame_format_type_progressive;
+        ndi_video_frame.p_data = nullptr;
         decoding_thread = thread(&DecoderStruct::DecodingThreadVoid, this);
     }
 
@@ -198,7 +232,7 @@ struct DecoderStruct {
             else
                 tmp_frame = vid_frame;
 
-            if (!sws_ctx) {
+            /*if (!sws_ctx) {
                 sws_ctx = sws_getContext(video_ctx->width, video_ctx->height, (AVPixelFormat)tmp_frame->format,
                     video_ctx->width, video_ctx->height, AV_PIX_FMT_BGRA,
                     SWS_FAST_BILINEAR, NULL, NULL, NULL);
@@ -209,15 +243,26 @@ struct DecoderStruct {
                 tmp_frame->linesize, 0, tmp_frame->height, dst_data, dst_linesize) < 0) {
                 cout << "Error during video scaling" << endl;
                 return false;
+            }*/
+
+            NDIlib_send_send_video_async_v2(ndi_sender, nullptr);
+            ndi_video_frame.xres = vid_frame->width;
+            ndi_video_frame.yres = vid_frame->height;
+            ndi_video_frame.timecode = vid_frame->pts * 1000000;
+            ndi_video_frame.FourCC = NDIlib_FourCC_type_I420;
+            ndi_video_frame.line_stride_in_bytes = vid_frame->linesize[0];
+            {
+                int offset = 0;
+                int size = 0;
+                for (auto i = 0; i < av_pix_fmt_count_planes(video_ctx->pix_fmt); i++) {
+                    size = av_image_get_plane_size(video_ctx->pix_fmt, video_ctx->width, video_ctx->height, 1, i);
+                    memcpy(ndi_video_frame.p_data + offset, vid_frame->data[i], size);
+                    offset += size;
+                }
             }
+            NDIlib_send_send_video_async_v2(ndi_sender, &ndi_video_frame);
         }
-        //show frame
-        NDIlib_send_send_video_async_v2(ndi_sender, nullptr);
-        ndi_video_frame.xres = vid_frame->width;
-        ndi_video_frame.yres = vid_frame->height;
-        ndi_video_frame.timecode = vid_frame->pts * 1000000;
-        ndi_video_frame.p_data = (uint8_t*)dst_data[0];
-        NDIlib_send_send_video_async_v2(ndi_sender, &ndi_video_frame);
+
         return true;
     }
 
@@ -268,47 +313,53 @@ struct DecoderStruct {
     /**
     * Decodes media from queue and send NDI, maintains delay
     */
+    int idx = 0;
     void DecodingThreadVoid() {
         while (decoding) {
             list<AudioVideoFrame> frames_to_send;
             {
                 lock_guard<mutex> g(buffers_mutex);
                 if (media_buffer.size()) {
-                    auto& last_item = *(--(media_buffer.end()));
-                    auto& first_item = *(media_buffer.begin());
-
-                    if (reset_decoding_offset) {
-                        reset_decoding_offset = false;
-                        decoding_offset = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - last_item.first;
+                    if (media_buffer.size() > 1000) {
+                        cout << "Queue length: " << media_buffer.size() << endl;
                     }
-                    uint64_t last_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count()-decoding_offset;
-                    
+                    uint64_t need_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - decoding_offset;
+
                     for (auto i = media_buffer.begin(); i != media_buffer.end();) {
+                        if (reset_decoding_offset) {
+                            reset_decoding_offset = false;
+                            decoding_offset = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - (*i).first;
+                            need_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - decoding_offset;
+                            idx = 0;
+                            perfmon.start();
+                        }
+
                         auto old_i = i;
                         old_i++;
-                        if (last_pts< (*i).first || last_pts - (*i).first < delay) {
+                        /*if ((*i).first > need_pts + delay) {
                             break;
                         }
-                        else if (last_pts - (*i).first < delay + drop_buffer) {
+                        else if ((*i).first < (need_pts + delay)) {
                             frames_to_send.push_back(move((*i).second));
-                        }
+                        }*/
+                        frames_to_send.push_back(move((*i).second));
                         media_buffer.erase(i);
                         i = old_i;
                     }
-                }                    
+                }
             }
-
             if (frames_to_send.size()) {
                 for (auto& i : frames_to_send) {
                     if (i.type == AVMEDIA_TYPE_VIDEO) {
                         DecodeVideoAndSendNdi(i.is_keyframe, i.timestamp, i.composition_time, move(i.data));
+                        perfmon.process();
+                        perfmon.printFps(1000);
                     }
                     else if (i.type == AVMEDIA_TYPE_AUDIO) {
                         DecodeAudioAndSendNdi(i.timestamp, move(i.data));
                     }
                 }
-            }else
-                this_thread::sleep_for(chrono::milliseconds(15));
+            }
         }
     }
 
@@ -324,7 +375,10 @@ struct DecoderStruct {
         sws_freeContext(sws_ctx);
         sws_ctx = nullptr;
         av_frame_free(&sw_frame);
-        ndi_video_frame.p_data = nullptr;
+        if (ndi_video_frame.p_data) {
+            delete[] ndi_video_frame.p_data;
+            ndi_video_frame.p_data = nullptr;
+        }
     }
 
     void CleanupAudio() {
@@ -402,7 +456,7 @@ struct DecoderStruct {
         cout << endl << "Inited audio" << endl <<
             "Key: " << params->key << endl <<
             "Samplerate: " << params->samplerate << endl <<
-            "Channels: " << params->channels << endl << endl;;        
+            "Channels: " << params->channels << endl << endl;;
         return true;
     }
 
@@ -450,6 +504,8 @@ struct DecoderStruct {
         video_ctx->time_base = { 1,1000 };
         video_ctx->extradata = (uint8_t*)av_malloc(extra_data.size());
         video_ctx->extradata_size = extra_data.size();
+        video_ctx->thread_count = std::thread::hardware_concurrency();
+        video_ctx->thread_type = FF_THREAD_SLICE | FF_THREAD_FRAME;
         memcpy(video_ctx->extradata, extra_data.data(), extra_data.size());
 
         if (use_hw) {
@@ -470,6 +526,9 @@ struct DecoderStruct {
             video_ctx->width, video_ctx->height, AV_PIX_FMT_BGRA, 1) < 0) {
             return false;
         }
+
+        auto frame_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, video_ctx->width, video_ctx->height, 1);
+        ndi_video_frame.p_data = new uint8_t[frame_size];
         cout << endl << "Inited video" << endl <<
             "Key: " << params->key << endl <<
             "Width: " << params->width << endl <<
@@ -526,7 +585,7 @@ DecoderStruct* CreateDecoderForKey(string key) {
 void ClientVoid2(DataLayer* transport_level) {
     librtmp::RTMPEndpoint rtmp_endpoint(transport_level);
     librtmp::RTMPServerSession server_session(&rtmp_endpoint);
-    bool key_checked = false;    
+    bool key_checked = false;
     bool first_run = true;
 
     while (true) {
@@ -563,6 +622,10 @@ void ClientVoid2(DataLayer* transport_level) {
             }
             bool is_key = false;
             if (message.video.d.frame_type == 1)is_key = true;
+            if (is_key) {
+                is_key = is_key;
+            }
+
             if (!ds->SendVideo(is_key, message.video.d.composition_time, message.timestamp, move(message.video.video_data_send))) {
                 cout << "Error sending video" << endl;
                 goto terminate_session;
@@ -594,11 +657,10 @@ terminate_session:
 
 struct ClientStruct {
     bool running_flag = true;
-    std::thread client_thread;
     std::shared_ptr<TCPNetwork> tcp_network;
 };
 
-void ClientVoid1(ClientStruct* cs) {
+void ClientVoid1(unique_ptr<ClientStruct> cs) {
     try {
         DataLayer* transport_level = cs->tcp_network.get();
         if (use_tls) {
@@ -617,30 +679,26 @@ void ClientVoid1(ClientStruct* cs) {
 
     }
     cs->tcp_network->destroy();
-    cs->running_flag = false;    
+    cs->running_flag = false;
 }
 
-std::list<ClientStruct*> clients;
 
 void ServerThread(TCPServer* server) {
     try {
         while (true) {
-            ClientStruct* cs = new ClientStruct();
+            unique_ptr<ClientStruct> cs = make_unique<ClientStruct>();
             cs->tcp_network = server->accept();
-            for (auto i = clients.begin(); i != clients.end();) {
-                auto old_i = i;
-                i++;
-                if (!((*old_i)->running_flag)) {
-                    (*old_i)->client_thread.join();
-                    delete (*old_i);
-                    clients.erase(old_i);
-                }
-            }
-            cs->client_thread = thread(&ClientVoid1, cs);
-            clients.push_back(cs);
+            auto th = thread(&ClientVoid1, move(cs));
+            th.detach();
         }
     }
-    catch (...) {}
+    catch (TCPNetworkException& e) {
+        cout << "Network error" << endl;
+    }
+    catch (exception& e) {
+        cout << "Unexpected error" << endl;
+    }
+    cout << "Server stopped" << endl;
 }
 
 int main(int argc, char** argv)
@@ -676,6 +734,7 @@ int main(int argc, char** argv)
     set_optional_parameter<uint16_t>(result, drop_buffer, "drop_buffer");
 
     if (result.count("hw_decoder")) { use_hw = true; }
+    use_hw = true;
     if ((!cert_path.size() || !key_path.size()) && (cert_path.size() || cert_path.size())) {
         cout << "Error: set cert and key to enable TLS server" << endl;
         return 0;
