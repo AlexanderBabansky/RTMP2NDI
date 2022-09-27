@@ -32,12 +32,6 @@ if (${USE_VCPKG})
 else()
 	set(FFMPEG_PATH CACHE PATH "FFMpeg path")
 
-	find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h PATHS ${FFMPEG_PATH}/include)
-	find_path(AVFORMAT_INCLUDE_DIR libavformat/avformat.h PATHS ${FFMPEG_PATH}/include)
-	find_path(AVUTIL_INCLUDE_DIR libavutil/avutil.h PATHS ${FFMPEG_PATH}/include)
-	find_path(AVSWSCALE_INCLUDE_DIR libswscale/swscale.h PATHS ${FFMPEG_PATH}/include)
-	find_path(AVSWRESAMPLE_INCLUDE_DIR libswresample/swresample.h PATHS ${FFMPEG_PATH}/include)	
-
 	find_library(AVCODEC_LIBRARY avcodec PATHS ${FFMPEG_PATH}/bin)
 	find_library(AVFORMAT_LIBRARY avformat PATHS ${FFMPEG_PATH}/bin)
 	find_library(AVUTIL_LIBRARY avutil PATHS ${FFMPEG_PATH}/bin)
@@ -52,40 +46,45 @@ else()
 	${AVSWSCALE_LIBRARY} MATCHES "-NOTFOUND$" OR
 	${AVSWRESAMPLE_LIBRARY} MATCHES "-NOTFOUND$")
 		message(FATAL_ERROR "FFMpeg not found")
-	endif()	
+	endif()
+
+	file(GLOB FFMPEG_DLLS "${FFMPEG_PATH}/bin/*.dll")
+	message(${FFMPEG_DLLS})
 endif()
 
 add_executable(rtmp2ndi rtmp2ndi.cpp perfmon.h perfmon.cpp)
 target_link_libraries(rtmp2ndi PRIVATE EasyRTMP::easyrtmp ${FFMPEG_LIBRARIES} ${NDI_SDK_PATH}/Lib/${NDI_LIB})
 target_include_directories(rtmp2ndi PRIVATE ${NDI_SDK_PATH}/Include ${FFMPEG_INCLUDE_DIRS})
-target_link_directories(rtmp2ndi PRIVATE ${FFMPEG_LIBRARY_DIRS})
+if ($<$<CONFIG:Debug>:true>)
+	get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_DEBUG)
+else()
+	get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_RELEASE)
+endif()
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${EASYRTMP_DLL} ${CMAKE_BINARY_DIR}
+)
 add_custom_command(TARGET rtmp2ndi POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NDI_SDK_PATH}/bin/${NDI_BIN} ${CMAKE_BINARY_DIR}
 )
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/avformat-59.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/avcodec-59.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/avdevice-59.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/avfilter-8.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/avutil-57.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/libmp3lame.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/openh264.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/swresample-4.dll ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_PATH}/bin/swscale-6.dll ${CMAKE_BINARY_DIR}
-)
+
+if (NOT ${USE_VCPKG})
+	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} ${CMAKE_BINARY_DIR}
+	)
+endif()
+
+set (RUNTIME_DIRS ".")
+
+if (NOT WIN32)
+	set(RUNTIME_DIRS "bin")
+endif()
+
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION ${RUNTIME_DIRS}
+    )
+install (FILES
+	${NDI_SDK_PATH}/bin/${NDI_BIN}
+	${EASYRTMP_DLL}
+	${FFMPEG_DLLS}
+	DESTINATION ${RUNTIME_DIRS})
