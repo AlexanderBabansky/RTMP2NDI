@@ -34,6 +34,9 @@ string allow_keys_path;
 unordered_set<string> allowed_keys;
 uint16_t delay = 0;
 uint16_t drop_buffer = 200;
+bool use_multithreading_cpu = true;
+bool ignore_timestamps = false;
+bool print_fps = false;
 
 struct AudioVideoFrame {
     uint64_t timestamp = 0;
@@ -133,6 +136,17 @@ int hw_decoder_ctx_init(AVCodecContext* ctx, const enum AVHWDeviceType type, AVB
     return err;
 }
 
+NDIlib_FourCC_video_type_e FFMpegPixelFormatToNDI(AVPixelFormat format) {
+    switch (format)
+    {
+    case AV_PIX_FMT_YUV420P:
+        return NDIlib_FourCC_type_I420;
+    case AV_PIX_FMT_NV12:
+        return NDIlib_FourCC_type_NV12;
+    }
+    return NDIlib_FourCC_video_type_max;
+}
+
 struct DecoderStruct {
     mutex buffers_mutex;
     multimap<uint64_t, AudioVideoFrame> media_buffer;
@@ -146,6 +160,7 @@ struct DecoderStruct {
     AVCodecContext* video_ctx = nullptr, * audio_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
     AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
+    AVPixelFormat sw_pix_fmt = AV_PIX_FMT_NONE;
     struct SwsContext* sws_ctx = nullptr;
     struct SwrContext* swr_ctx = nullptr;
     uint8_t* dst_data[4]{ nullptr };
@@ -208,7 +223,6 @@ struct DecoderStruct {
         {
             lock_guard<recursive_mutex> g(decoder_mutex);
             assert(video_ctx);
-            //cout << "Decoding frame pts: " << vid_pkt->pts << ", dts: "<<vid_pkt->dts << endl;
             int ret = avcodec_send_packet(video_ctx, vid_pkt);
             if (ret < 0) {
                 cout << "Error sending a video packet for decoding" << endl;
@@ -232,31 +246,24 @@ struct DecoderStruct {
             else
                 tmp_frame = vid_frame;
 
-            /*if (!sws_ctx) {
-                sws_ctx = sws_getContext(video_ctx->width, video_ctx->height, (AVPixelFormat)tmp_frame->format,
-                    video_ctx->width, video_ctx->height, AV_PIX_FMT_BGRA,
-                    SWS_FAST_BILINEAR, NULL, NULL, NULL);
-                if (!sws_ctx)
-                    return false;
-            }
-            if (sws_scale(sws_ctx, (const uint8_t* const*)tmp_frame->data,
-                tmp_frame->linesize, 0, tmp_frame->height, dst_data, dst_linesize) < 0) {
-                cout << "Error during video scaling" << endl;
-                return false;
-            }*/
-
             NDIlib_send_send_video_async_v2(ndi_sender, nullptr);
-            ndi_video_frame.xres = vid_frame->width;
-            ndi_video_frame.yres = vid_frame->height;
+            if (!ndi_video_frame.p_data || sw_pix_fmt != (AVPixelFormat)tmp_frame->format) {
+                sw_pix_fmt = (AVPixelFormat)tmp_frame->format;
+                auto frame_size = av_image_get_buffer_size(sw_pix_fmt, video_ctx->width, video_ctx->height, 1);
+                ndi_video_frame.p_data = new uint8_t[frame_size];
+            }
+
+            ndi_video_frame.xres = tmp_frame->width;
+            ndi_video_frame.yres = tmp_frame->height;
             ndi_video_frame.timecode = vid_frame->pts * 1000000;
-            ndi_video_frame.FourCC = NDIlib_FourCC_type_I420;
-            ndi_video_frame.line_stride_in_bytes = vid_frame->linesize[0];
+            ndi_video_frame.FourCC = FFMpegPixelFormatToNDI((AVPixelFormat)tmp_frame->format);;
+            ndi_video_frame.line_stride_in_bytes = tmp_frame->linesize[0];
             {
                 int offset = 0;
                 int size = 0;
-                for (auto i = 0; i < av_pix_fmt_count_planes(video_ctx->pix_fmt); i++) {
-                    size = av_image_get_plane_size(video_ctx->pix_fmt, video_ctx->width, video_ctx->height, 1, i);
-                    memcpy(ndi_video_frame.p_data + offset, vid_frame->data[i], size);
+                for (auto i = 0; i < av_pix_fmt_count_planes((AVPixelFormat)tmp_frame->format); i++) {
+                    size = av_image_get_plane_size((AVPixelFormat)tmp_frame->format, video_ctx->width, video_ctx->height, 1, i);
+                    memcpy(ndi_video_frame.p_data + offset, tmp_frame->data[i], size);
                     offset += size;
                 }
             }
@@ -315,34 +322,38 @@ struct DecoderStruct {
     */
     int idx = 0;
     void DecodingThreadVoid() {
+
         while (decoding) {
+            int64_t delta_min = 0;
             list<AudioVideoFrame> frames_to_send;
             {
                 lock_guard<mutex> g(buffers_mutex);
                 if (media_buffer.size()) {
-                    if (media_buffer.size() > 1000) {
-                        cout << "Queue length: " << media_buffer.size() << endl;
-                    }
-                    uint64_t need_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - decoding_offset;
-
                     for (auto i = media_buffer.begin(); i != media_buffer.end();) {
                         if (reset_decoding_offset) {
                             reset_decoding_offset = false;
                             decoding_offset = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - (*i).first;
-                            need_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - decoding_offset;
-                            idx = 0;
                             perfmon.start();
                         }
 
+                        uint64_t need_pts = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count() - decoding_offset;
                         auto old_i = i;
                         old_i++;
-                        /*if ((*i).first > need_pts + delay) {
-                            break;
+                        int64_t delta = (*i).first - (need_pts + delay);
+                        if (delta < -drop_buffer) {
+                            cout << "Decoder can't keep up. Offset by " << -delta << "ms" << endl;
                         }
-                        else if ((*i).first < (need_pts + delay)) {
+                        if (!ignore_timestamps) {
+                            if (delta > 0) {
+                                break;
+                            }
+                            else if (delta <= 0) {
+                                frames_to_send.push_back(move((*i).second));
+                            }
+                        }
+                        else {
                             frames_to_send.push_back(move((*i).second));
-                        }*/
-                        frames_to_send.push_back(move((*i).second));
+                        }
                         media_buffer.erase(i);
                         i = old_i;
                     }
@@ -352,8 +363,10 @@ struct DecoderStruct {
                 for (auto& i : frames_to_send) {
                     if (i.type == AVMEDIA_TYPE_VIDEO) {
                         DecodeVideoAndSendNdi(i.is_keyframe, i.timestamp, i.composition_time, move(i.data));
-                        perfmon.process();
-                        perfmon.printFps(1000);
+                        if (print_fps) {
+                            perfmon.process();
+                            perfmon.printFps(1000);
+                        }
                     }
                     else if (i.type == AVMEDIA_TYPE_AUDIO) {
                         DecodeAudioAndSendNdi(i.timestamp, move(i.data));
@@ -504,8 +517,11 @@ struct DecoderStruct {
         video_ctx->time_base = { 1,1000 };
         video_ctx->extradata = (uint8_t*)av_malloc(extra_data.size());
         video_ctx->extradata_size = extra_data.size();
-        video_ctx->thread_count = std::thread::hardware_concurrency();
-        video_ctx->thread_type = FF_THREAD_SLICE | FF_THREAD_FRAME;
+        if (use_multithreading_cpu) {
+            video_ctx->thread_count = std::thread::hardware_concurrency();
+            video_ctx->thread_type = FF_THREAD_FRAME;
+            cout << "Use multithreaded CPU. Threads: " << video_ctx->thread_count << endl;
+        }
         memcpy(video_ctx->extradata, extra_data.data(), extra_data.size());
 
         if (use_hw) {
@@ -527,8 +543,6 @@ struct DecoderStruct {
             return false;
         }
 
-        auto frame_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, video_ctx->width, video_ctx->height, 1);
-        ndi_video_frame.p_data = new uint8_t[frame_size];
         cout << endl << "Inited video" << endl <<
             "Key: " << params->key << endl <<
             "Width: " << params->width << endl <<
@@ -625,7 +639,6 @@ void ClientVoid2(DataLayer* transport_level) {
             if (is_key) {
                 is_key = is_key;
             }
-
             if (!ds->SendVideo(is_key, message.video.d.composition_time, message.timestamp, move(message.video.video_data_send))) {
                 cout << "Error sending video" << endl;
                 goto terminate_session;
@@ -717,7 +730,10 @@ int main(int argc, char** argv)
         ("l,allow_keys", "RTMP allowed key list filepath. Keys are separated by newline", cxxopts::value<std::string>())
         ("w,hw_decoder", "enable hardware decoding on supported GPU")
         ("d,delay", "in milliseconds. Keeps frames synced: buffers or drops frames to keep them synced. Default is 0 ms", cxxopts::value<uint16_t>())
-        ("b,drop_buffer", "in milliseconds. Drop frames with too old timestamp in queue. Prevents NDI artifacts. Default to 200 ms", cxxopts::value<uint16_t>())
+        ("b,drop_buffer", "in milliseconds. Detects when decoder can't keep up with video. Default to 200 ms", cxxopts::value<uint16_t>())
+        ("m,disable_multithread", "disable multithreading decoding on CPU. Decreases latency")
+        ("f,print_fps", "print frames per second")
+        ("i,ignore_ts", "ignore timestampes. Display all frames as soon as possible")
         ("h,help", "help");
     auto result = options.parse(argc, argv);
     if (result.count("help"))
@@ -734,7 +750,10 @@ int main(int argc, char** argv)
     set_optional_parameter<uint16_t>(result, drop_buffer, "drop_buffer");
 
     if (result.count("hw_decoder")) { use_hw = true; }
-    use_hw = true;
+    if (result.count("print_fps")) { print_fps = true; }
+    if (result.count("disable_multithread")) { use_multithreading_cpu = false; }
+    if (result.count("ignore_ts")) { ignore_timestamps = true; }
+
     if ((!cert_path.size() || !key_path.size()) && (cert_path.size() || cert_path.size())) {
         cout << "Error: set cert and key to enable TLS server" << endl;
         return 0;
