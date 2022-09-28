@@ -63,8 +63,8 @@ endif()
 #TARGET
 
 add_executable(rtmp2ndi rtmp2ndi.cpp perfmon.h perfmon.cpp)
-target_link_libraries(rtmp2ndi PRIVATE EasyRTMP::easyrtmp ${FFMPEG_LIBRARIES} ${NDI_SDK_PATH}/Lib/${NDI_LIB})
-target_include_directories(rtmp2ndi PRIVATE ${NDI_SDK_PATH}/Include ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(rtmp2ndi PRIVATE EasyRTMP::easyrtmp ${FFMPEG_LIBRARIES} ${NDI_SDK_PATH}/lib/${NDI_LIB})
+target_include_directories(rtmp2ndi PRIVATE ${NDI_SDK_PATH}/include ${FFMPEG_INCLUDE_DIRS})
 
 #COPY DLL TO BUILD WINDOWS
 
