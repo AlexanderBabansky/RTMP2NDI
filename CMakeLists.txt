@@ -60,30 +60,37 @@ else()
 	endif()
 endif()
 
+#TARGET
+
 add_executable(rtmp2ndi rtmp2ndi.cpp perfmon.h perfmon.cpp)
 target_link_libraries(rtmp2ndi PRIVATE EasyRTMP::easyrtmp ${FFMPEG_LIBRARIES} ${NDI_SDK_PATH}/Lib/${NDI_LIB})
 target_include_directories(rtmp2ndi PRIVATE ${NDI_SDK_PATH}/Include ${FFMPEG_INCLUDE_DIRS})
-if ($<$<CONFIG:Debug>:true>)
-	get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_DEBUG)
-else()
-	get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_RELEASE)
-endif()
 
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${EASYRTMP_DLL} ${CMAKE_BINARY_DIR}
-)
-add_custom_command(TARGET rtmp2ndi POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NDI_SDK_PATH}/bin/${NDI_BIN} ${CMAKE_BINARY_DIR}
-)
+#COPY DLL TO BUILD WINDOWS
 
-if (NOT ${USE_VCPKG})
+if (WIN32)
+	if ($<$<CONFIG:Debug>:true>)
+		get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_DEBUG)
+	else()
+		get_target_property(EASYRTMP_DLL EasyRTMP::easyrtmp IMPORTED_LOCATION_RELEASE)
+	endif()
+
 	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} ${CMAKE_BINARY_DIR}
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${EASYRTMP_DLL} ${CMAKE_BINARY_DIR}
 	)
+	add_custom_command(TARGET rtmp2ndi POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NDI_SDK_PATH}/bin/${NDI_BIN} ${CMAKE_BINARY_DIR}
+	)
+	if (NOT ${USE_VCPKG})
+		add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} ${CMAKE_BINARY_DIR}
+		)
+	endif()
 endif()
+
+#INSTALL
 
 set (RUNTIME_DIRS ".")
-
 if (NOT WIN32)
 	set(RUNTIME_DIRS "bin")
 endif()
@@ -91,8 +98,11 @@ endif()
 install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION ${RUNTIME_DIRS}
     )
-install (FILES
-	${NDI_SDK_PATH}/bin/${NDI_BIN}
-	${EASYRTMP_DLL}
-	${FFMPEG_DLLS}
-	DESTINATION ${RUNTIME_DIRS})
+
+if (WIN32)
+	install (FILES
+		${NDI_SDK_PATH}/bin/${NDI_BIN}
+		${EASYRTMP_DLL}
+		${FFMPEG_DLLS}
+		DESTINATION ${RUNTIME_DIRS})
+endif()
