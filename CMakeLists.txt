@@ -10,17 +10,17 @@ set(NDI_SDK_PATH CACHE PATH "NDI SDK Path")
 
 find_package(EasyRTMP REQUIRED)
 
-if(NOT EXISTS "${NDI_SDK_PATH}/Include/Processing.NDI.Lib.h" OR
-	NOT EXISTS "${NDI_SDK_PATH}/Lib/${NDI_LIB}")	
-	message(FATAL_ERROR "NDI SDK not found")
-endif()
-
 if(WIN32)
 	set(NDI_LIB x64/Processing.NDI.Lib.x64.lib)
 	set(NDI_BIN x64/Processing.NDI.Lib.x64.dll)
 else()
 	set(NDI_LIB x86_64-linux-gnu/libndi.so)
 	set(NDI_BIN x86_64-linux-gnu/libndi.so)
+endif()
+
+if(NOT EXISTS "${NDI_SDK_PATH}/include/Processing.NDI.Lib.h" OR
+	NOT EXISTS "${NDI_SDK_PATH}/lib/${NDI_LIB}")	
+	message(FATAL_ERROR "NDI SDK not found")
 endif()
 
 if (${USE_OPENSSL})	
@@ -30,15 +30,23 @@ endif()
 if (${USE_VCPKG})
 	find_package(FFMPEG REQUIRED)
 else()
-	set(FFMPEG_PATH CACHE PATH "FFMpeg path")
+	
 
-	find_library(AVCODEC_LIBRARY avcodec PATHS ${FFMPEG_PATH}/bin)
-	find_library(AVFORMAT_LIBRARY avformat PATHS ${FFMPEG_PATH}/bin)
-	find_library(AVUTIL_LIBRARY avutil PATHS ${FFMPEG_PATH}/bin)
-	find_library(AVSWSCALE_LIBRARY swscale PATHS ${FFMPEG_PATH}/bin)
-	find_library(AVSWRESAMPLE_LIBRARY swresample PATHS ${FFMPEG_PATH}/bin)
-	set(FFMPEG_LIBRARIES ${AVCODEC_LIBRARY}; ${AVFORMAT_LIBRARY}; ${AVUTIL_LIBRARY}; ${AVSWSCALE_LIBRARY};${AVSWRESAMPLE_LIBRARY})
-	set(FFMPEG_INCLUDE_DIRS ${FFMPEG_PATH}/include)
+	if (WIN32)
+		set(FFMPEG_PATH CACHE PATH "FFMpeg path")
+		set(FFMPEG_LIBRARY_DIR ${FFMPEG_PATH}/bin)
+		set(FFMPEG_INCLUDE_DIRS ${FFMPEG_PATH}/include)
+	else()
+		set(FFMPEG_LIBRARY_DIR "/usr/local/lib")
+	endif()
+
+	find_library(AVCODEC_LIBRARY avcodec PATHS ${FFMPEG_LIBRARY_DIR})
+	find_library(AVFORMAT_LIBRARY avformat PATHS ${FFMPEG_LIBRARY_DIR})
+	find_library(AVUTIL_LIBRARY avutil PATHS ${FFMPEG_LIBRARY_DIR})
+	find_library(AVSWSCALE_LIBRARY swscale PATHS ${FFMPEG_LIBRARY_DIR})
+	find_library(AVSWRESAMPLE_LIBRARY swresample PATHS ${FFMPEG_LIBRARY_DIR})			
+
+	set(FFMPEG_LIBRARIES ${AVCODEC_LIBRARY}; ${AVFORMAT_LIBRARY}; ${AVUTIL_LIBRARY}; ${AVSWSCALE_LIBRARY};${AVSWRESAMPLE_LIBRARY})	
 
 	if (${AVCODEC_LIBRARY} MATCHES "-NOTFOUND$" OR
 	${AVFORMAT_LIBRARY} MATCHES "-NOTFOUND$" OR
