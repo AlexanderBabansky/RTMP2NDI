@@ -30,8 +30,6 @@ endif()
 if (${USE_VCPKG})
 	find_package(FFMPEG REQUIRED)
 else()
-	
-
 	if (WIN32)
 		set(FFMPEG_PATH CACHE PATH "FFMpeg path")
 		set(FFMPEG_LIBRARY_DIR ${FFMPEG_PATH}/bin)
@@ -56,8 +54,10 @@ else()
 		message(FATAL_ERROR "FFMpeg not found")
 	endif()
 
-	file(GLOB FFMPEG_DLLS "${FFMPEG_PATH}/bin/*.dll")
-	message(${FFMPEG_DLLS})
+	if (WIN32)
+		file(GLOB FFMPEG_DLLS "${FFMPEG_PATH}/bin/*.dll")
+			message(${FFMPEG_DLLS})
+	endif()
 endif()
 
 add_executable(rtmp2ndi rtmp2ndi.cpp perfmon.h perfmon.cpp)
