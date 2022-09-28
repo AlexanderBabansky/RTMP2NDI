@@ -6,6 +6,7 @@
 #include <mutex>
 #include <chrono>
 #include <thread>
+#include <memory>
 #include "cxxopts.hpp"
 #include "Processing.NDI.Lib.h"
 #include "easyrtmp/data_layers/tcp_network.h"
